@@ -1,0 +1,20 @@
+scanAWS() {
+  get_aws_account
+  aws_regions=${aws_regions:-"$(aws ec2 describe-regions | jq -r '.Regions[].RegionName')"}
+
+  for acc_region in $aws_regions; do
+    export AWS_DEFAULT_REGION=${acc_region}
+
+    if [ "${aws_ec2_collector}" = "true" ]; then
+      get_ec2_instances
+      get_ec2secgroups
+    else
+      logInfo "aws ec2 collection disabled. Hint: aws_ec2_collector=${aws_ec2_collector}"
+    fi
+
+    [ "${aws_ecs_collector}" = "true" ]  && get_ecs || logInfo "aws ecs collection disabled. Hint: aws_ecs_collector=${aws_ecs_collector}"
+    [ "${aws_rds_collector}" = "true" ]  && get_rds_instances || logInfo "aws rds collection disabled. Hint: aws_rds_collector=${aws_rds_collector}"
+    [ "${aws_route53_collector}" = "true" ]  && get_route53 || logInfo "aws route53 collection disabled. Hint: aws_route53_collector=${aws_route53_collector}"
+    [ "${aws_vpc_collector}" = "true" ]  && get_vpc || logInfo "aws vpc collection disabled. Hint: aws_vpc_collector=${aws_vpc_collector}"
+  done
+}

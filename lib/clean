@@ -1,0 +1,12 @@
+cleanup_alias() {
+  [ "$(ls "${docDir}/" | wc -l)" -gt 0 ] || rm -rf "${docDir:?}/"
+}
+
+cleanup_region() {
+  [ "$(ls "${docRegionDir}/" | wc -l)" -gt 0 ] || rm -rf "${docRegionDir:?}/"
+}
+
+cleanup() {
+  cleanup_alias
+  cleanup_region
+}

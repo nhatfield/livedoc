@@ -1,0 +1,117 @@
+create_ec2_attributes() {
+  echo "**${provider} ${dirAlias} Attributes**
+
+* **Environment:** \`${env}\`
+* **VPC:** [${vpc}](https://${acc_region}.console.aws.amazon.com/vpc/home?region=${acc_region}#VpcDetails:VpcId=${vpc})
+* **State:** \`${state}\`
+* **Type:** \`${type}\`
+* **Instance ID:** \`${id}\`
+* **IP Address:** \`${ip}\`
+${extraAttributes}"
+}
+
+get_ec2_instances() {
+  dirAlias=EC2 
+  set_docDir
+  docFile="${docDir}/all.md"
+
+  logInfo "running scan on ${acc_alias} ${acc_region}"
+  resource=$(aws ec2 describe-instances 2>/dev/null | jq '.Reservations[].Instances[]') || logWarn "could not describe any instances"
+
+  resource_ids=$(jq -r '.InstanceId' <<< "${resource}") || logWarn "no ec2s discovered"
+
+  if [ "${resource}" ]; then
+    echo "**${acc_alias} (${account})**" > "${docFile}"
+    echo >> "${docFile}"
+    echo "**count:** $(wc -l <<< "${resource_ids}")" >> "${docFile}"
+    echo >> "${docFile}"
+    echo "| Name | Environment | State | Instance Type | Instance ID | IP Address | VPC | Account ID |" >> "${docFile}"
+    echo "|:-----|-------------|:-----:|:-------------:|:------------|:----------:|:----|------------|" >> "${docFile}"
+    jq -r --arg reg "${acc_region}" --arg acc "${account}" --arg env "${aws_environment_tag_name}" '"| [" +
+           (select(.Tags != null) | .Tags[] | select(.Key != null) | select(.Key == "Name").Value) +
+             "](" + (select(.Tags != null) | .Tags[] | select(.Key != null) | select(.Key == "Name").Value) +
+           ".md) | " +
+           (select(.Tags != null) | .Tags[] | select(.Key != null) | select(.Key == $env).Value) +
+           " | " +
+           (.State.Name) +
+           " | " +
+           (.InstanceType) +
+           " | [" +
+             (.InstanceId) +
+               "](https://" + $reg + ".console.aws.amazon.com/ec2/home?region=" + $reg + "#InstanceDetails:instanceId=" + (.InstanceId) +
+           ") | " +
+           (.PrivateIpAddress) +
+           " | [" +
+           (.VpcId) +
+             "](https://" + $reg + ".console.aws.amazon.com/vpc/home?region=" + $reg + "#VpcDetails:VpcId=" + (.VpcId) +
+           ") | " +
+           $acc +
+           " |"' <<< "${resource}" 2>/dev/null >> "${docFile}" || logWarn "all instances are missing one or more required tags [${aws_environment_tag_name}|Name]."
+  fi
+  
+  validate_ec2_instances
+
+
+  if [ "${resource_ids}" ]; then  
+    for i in ${resource_ids}; do
+      logInfo "creating document for ${i}"
+      me=($(jq -r --arg i "${i}" 'select(.InstanceId == $i) | .State.Name, .InstanceType, .PrivateIpAddress, .VpcId' <<< "${resource}"))
+  
+      name=$(jq -r --arg i "${i}" 'select(.InstanceId == $i) | .Tags[] | select(.Key == "Name").Value' <<< "${resource}" 2>/dev/null) || true
+      env=$(jq -r --arg i "${i}" --arg env "${aws_environment_tag_name}" 'select(.InstanceId == $i) | .Tags[] | select(.Key == $env).Value' <<< "${resource}" 2>/dev/null) || true
+      infra_timestamp=$(jq -r --arg i "${i}" --arg tagname "${change_control_timestamp_infra_tag_name}" 'select(.InstanceId == $i) | .Tags[] | select(.Key == $tagname).Value' <<< "${resource}" 2>/dev/null) || true
+      os_timestamp=$(jq -r --arg i "${i}" --arg tagname "${change_control_timestamp_os_tag_name}" 'select(.InstanceId == $i) | .Tags[] | select(.Key == $tagname).Value' <<< "${resource}" 2>/dev/null) || true
+      sourceOsPath=$(jq -r --arg i "${i}" --arg tagname "${source_control_os_tag_name}" 'select(.InstanceId == $i) | .Tags[] | select(.Key == $tagname).Value' <<< "${resource}" 2>/dev/null) || true
+      sourceInfraPath=$(jq -r --arg i "${i}" --arg tagname "${source_control_infra_tag_name}" 'select(.InstanceId == $i) | .Tags[] | select(.Key == $tagname).Value' <<< "${resource}" 2>/dev/null) || true
+      publicIp=$(jq -r --arg i "${i}" 'select(.InstanceId == $i) | (select(.PublicIpAddress != null) | .PublicIpAddress)' <<< "${resource}") || true
+      secGroups=$(jq -r --arg i "${i}" 'select(.InstanceId == $i) | (select(.SecurityGroups != null) | select(.SecurityGroups[] != null) | .SecurityGroups[].GroupId)' <<< "${resource}")
+
+      state=${me[0]:-""}
+      type=${me[1]:-""}
+      ip=${me[2]:-""}
+      vpc=${me[3]:-""}
+  
+      id=${i}
+  
+      if [ "${name}" ] && [ "${env}" ]; then
+        filename=${name}
+      else
+        [ "${name}" ] || name=NULL
+        [ "${env}" ] || env=NULL
+        filename=${i}
+      fi
+
+      extraAttributes=
+      if [ "${publicIp}" ]; then
+        [ "${extraAttributes}" ] && extraAttributes="${extraAttributes}
+* **Public Address:** \`${publicIp}\`" || extraAttributes="* **Public Address:** \`${publicIp}\`"
+      fi
+
+      if [ "${secGroups}" ]; then
+        [ "${extraAttributes}" ] && extraAttributes="${extraAttributes}
+* **Security Groups:**
+$(for i in ${secGroups}; do echo "  * ${i}"; done)" || extraAttributes="* **Security Groups:**
+$(for i in ${secGroups}; do echo "  * ${i}"; done)"
+      fi
+
+  
+      docFile=${docDir}/${filename}.md
+      attributes=$(create_ec2_attributes)
+      create_monitor_attributes true
+      docit
+    done
+  fi
+}
+
+validate_ec2_instances() {
+  if [ "${resource_ids}" ]; then
+    for i in ${resource_ids}; do
+      grep -q "${i}" "${docFile}" || echo "| [unknown](${i}.md) | \`NULL\` | unknown | unknown | [${i}](https://${acc_region}.console.aws.amazon.com/ec2/home?region=${acc_region}#InstanceDetails:instanceId=${i}) | unknown | unknown | ${account} |" >> "${docFile}"
+    done
+    echo "${resource}" > "${docDir}"/resource.json
+  else
+    rm -rf "${docFile}"
+  fi
+
+  cleanup
+}

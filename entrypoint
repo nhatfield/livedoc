@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+homeDir="/opt/www"
+confDir="${homeDir}/conf"
+option=${1:-""}
+
+LIVEDOC_NGINX_SERVER_NAME=${LIVEDOC_NGINX_SERVER_NAME:-"localhost"}
+LIVEDOC_MKDOCS_SITE_NAME=${LIVEDOC_MKDOCS_SITE_NAME:-"Live Doc"}
+LIVEDOC_SITE_STAGE=${LIVEDOC_SITE_STAGE:-"prod"}
+LIVEDOC_SCHEDULE=${LIVEDOC_SCHEDULE:-"0 2 * * *"}
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+cd "${homeDir}"
+
+setup() {
+  for v in $(set -o posix; set | sed 's% %:#:%g'); do
+    if [[ "${v}" == "LIVEDOC_"*  ]]; then
+
+      KEY=$(echo "${v}" | sed 's%=.*%%;s%__%##%g;s%LIVEDOC_%%;s%##%_%g' | tr '[:upper:]' '[:lower:]')
+      VAL=$(echo "${v}" | sed "s%.*=%%;s%[']%%g")
+
+      if [[ "${KEY}" == *"pass"* ]] || [[ "${KEY}" == *"sec"* ]] || [[ "${KEY}" == *"auth"* ]] || [[ "${KEY}" == *"key"* ]]; then
+        echo "$(date +%Y-%m-%dT%H:%M:%S) [INFO] [entrypoint] - Configuring [${KEY}]: $(echo "${VAL//:#:/ }" | sed 's%.%*%g')"
+      else
+        echo "$(date +%Y-%m-%dT%H:%M:%S) [INFO] [entrypoint] - Configuring [${KEY}]: ${VAL//:#:/ }"
+      fi
+
+      if [[ "${KEY}" == "mkdocs_"* ]]; then
+        KEY=${KEY//mkdocs_/}
+        EQUALIZER=": "
+        CLOSE=""
+        confFile="${homeDir}/mkdocs.yml"
+      elif [[ "${KEY}" == "nginx_"* ]]; then
+        KEY=${KEY//nginx_/}
+        EQUALIZER=" "
+        CLOSE=";"
+        confFile="/etc/nginx/conf.d/default.conf" 
+      else
+        EQUALIZER="="
+        CLOSE=""
+        confFile="${confDir}/livedoc.conf"
+      fi
+
+ 
+      if [[ "${VAL}" == *":#:"* ]]; then
+        sed -i "s%${KEY}${EQUALIZER}.*%${KEY}${EQUALIZER}\"${VAL//:#:/ }\"${CLOSE}%" "${confFile}"
+      else
+        sed -i "s%${KEY}${EQUALIZER}.*%${KEY}${EQUALIZER}${VAL}${CLOSE}%" "${confFile}"
+      fi
+    fi
+  done
+
+  echo "${LIVEDOC_SCHEDULE} /bin/bash /entrypoint run" > /schedule
+  crontab /schedule
+}
+
+
+run() {
+  . lib/system
+  echo > docs/index.md
+
+  for s in bin/*; do
+    # shellcheck source=src/util.sh
+    . "${s}"
+  done
+  compute_summary
+  network_summary
+  domain_summary
+
+  index=$(< docs/index.md)
+  index="
+**Legend**
+
+* :warning: - unknown resources detected
+* :ballot_box_with_check: - all resources detected successfully with tags
+
+${index}"
+
+  echo "${index}" > docs/index.md
+  mkdocs build
+}
+
+
+case ${option} in
+               setup)
+                 setup
+                 ;;
+               run)
+                 run
+                 ;;
+               *)
+                 setup
+                 echo "Running initial scan before building your site..."
+                 run
+                 cron -f &
+                 nginx -g "daemon off;"
+                 ;;
+esac
+

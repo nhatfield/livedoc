@@ -1,0 +1,128 @@
+create_route53_attributes() {
+  echo "**${provider} ${dirAlias} Attributes**
+
+* **Environment:** \`${env}\`
+* **ID:** [${id}](https://${acc_region}.console.aws.amazon.com/route53/v2/hostedzones#ListRecordSets/${id})
+* **Zone Name:** \`${zoneName}\`
+* **Zone Type:** \`${private}\`
+* **Records:** \`${records}\`
+
+<br>
+
+<details>
+  <summary>Name Records</summary>
+    <table>
+    <tr>
+      <th>Name</th>
+      <th>Type</th>
+      <th>Value</th>
+    </tr>
+${recordValues}
+    </table>
+</details>"
+}
+
+get_route53_records() {
+  aws route53 list-resource-record-sets --hosted-zone-id "${id}"
+}
+
+get_route53() {
+  if [ "${acc_region}" = "${providerDefaultRegion}" ]; then
+    dirAlias=Route53
+    set_docDir
+    docFile="${docDir}/all.md"
+  
+    logInfo "running scan on ${acc_alias} ${acc_region}"
+    resource=$(aws route53 list-hosted-zones 2>/dev/null | jq '.HostedZones[]') || logWarn "could not describe any hosted zones"
+  
+    resource_ids=$(jq -r '.Id' <<< "${resource}") || logWarn "no hosted zones discovered"
+  
+    if [ "${resource}" ]; then
+      echo "**${acc_alias} (${account})**" > "${docFile}"
+      echo >> "${docFile}"
+      echo "**count:** $(wc -l <<< "${resource_ids}")" >> "${docFile}"
+      echo >> "${docFile}"
+      echo "| Name | Environment | ID | Zone Name | Zone Type | Records | Account ID |" >> "${docFile}"
+      echo "|:-----|-------------|:--:|:---------:|:---------:|:-------:|------------|" >> "${docFile}"
+      jq -r --arg reg "${acc_region}" --arg acc "${account}" --arg env "${aws_environment_tag_name}" '"| [" +
+             (select(.Tags != null) | .Tags[] | select(.Key != null) | select(.Key == "Name").Value) +
+               "](" + (select(.Tags != null) | .Tags[] | select(.Key != null) | select(.Key == "Name").Value) +
+             ".md) | " +
+             (select(.Tags != null) | .Tags[] | select(.Key != null) | select(.Key == $env).Value) +
+             " | [" +
+             (.Id |= sub(".*/"; "").Id) +
+               "](https://" + $reg + ".console.aws.amazon.com/route53/v2/hostedzones#ListRecordSets/" + (.Id |= sub(".*/"; "").Id) +
+             ") | " +
+             " | " +
+             (.Name) +
+             " | " +
+             (.Config.PrivateZone |= sub("true"; "Private").Config.PrivateZone | .Config.PrivateZone |= sub("false"; "Public").Config.PrivateZone) +
+             " | " +
+             (.ResourceRecordSetCount) +
+             " | " +
+             $acc +
+             " |"' <<< "${resource}" 2>/dev/null >> "${docFile}" || logWarn "all hosted zones are missing one or more required tags [${aws_environment_tag_name}|Name]."
+    fi
+    
+    validate_route53
+
+    if [ "${resource_ids}" ]; then
+      for i in ${resource_ids}; do
+        logInfo "creating document for ${i}"
+        me=($(jq -r --arg i "${i}" 'select(.Id == $i) | .Config.PrivateZone, .ResourceRecordSetCount, .Name' <<< "${resource}"))
+    
+        name=$(jq -r --arg i "${i}" 'select(.Id == $i) | .Tags[] | select(.Key == "Name").Value' <<< "${resource}" 2>/dev/null) || true
+        env=$(jq -r --arg i "${i}" --arg env "${aws_environment_tag_name}" 'select(.Id == $i) | .Tags[] | select(.Key == $env).Value' <<< "${resource}" 2>/dev/null) || true
+        infra_timestamp=$(jq -r --arg i "${i}" --arg tagname "${change_control_timestamp_infra_tag_name}" 'select(.Id == $i) | .Tags[] | select(.Key == $tagname).Value' <<< "${resource}" 2>/dev/null) || true
+        os_timestamp=$(jq -r --arg i "${i}" --arg tagname "${change_control_timestamp_os_tag_name}" 'select(.Id == $i) | .Tags[] | select(.Key == $tagname).Value' <<< "${resource}" 2>/dev/null) || true
+        sourceOsPath=$(jq -r --arg i "${i}" --arg tagname "${source_control_os_tag_name}" 'select(.Id == $i) | .Tags[] | select(.Key == $tagname).Value' <<< "${resource}" 2>/dev/null) || true
+        sourceInfraPath=$(jq -r --arg i "${i}" --arg tagname "${source_control_infra_tag_name}" 'select(.Id == $i) | .Tags[] | select(.Key == $tagname).Value' <<< "${resource}" 2>/dev/null) || true
+        
+        priv=${me[0]:-""}
+        records=${me[1]:-""}
+        zoneName=${me[2]:-""}
+        id=${i//*\//}
+    
+        if [ "${priv}" = "true" ]; then
+          private=private
+        else
+          private=public
+        fi
+    
+        if [ "${name}" ] && [ "${env}" ]; then
+          filename=${name}
+        else
+          [ "${name}" ] || name=NULL
+          [ "${env}" ] || env=NULL
+          filename=${i//*\//}
+        fi
+    
+        resourceRecords=$(get_route53_records | jq '.ResourceRecordSets[]' 2>/dev/null)
+        aliasRecordValues=$(jq -r 'select(.AliasTarget != null) | "<tr>\n<td>\(.Name)</td>\n<td>\(.Type) (Alias)</td>\n<td>\n<ul>","<li>\(.AliasTarget.DNSName)</li>","</ul>\n</td>\n</tr>"' <<< "${resourceRecords}" 2>/dev/null)
+        resourceRecordValues=$(jq -r 'select(.ResourceRecords != null) | "<tr>\n<td>\(.Name)</td>\n<td>\(.Type)</td>\n<td>\n<ul>","<li>\(.ResourceRecords[].Value)</li>","</ul>\n</td>\n</tr>"' <<< "${resourceRecords}" 2>/dev/null)
+        recordValues="${aliasRecordValues}
+          ${resourceRecordValues}"
+        echo "${resourceRecords}" > "${docDir}/${id}".record.json
+
+        docFile=${docDir}/${filename}.md
+        attributes=$(create_route53_attributes)
+        create_monitor_attributes false
+        docit
+      done
+    fi
+  fi
+}
+
+validate_route53() {
+  if [ "${resource_ids}" ]; then
+    for i in ${resource_ids}; do
+      grep -q "${i//*\//}" "${docFile}" || echo "| [unknown](${i//*\//}.md) | \`NULL\` | [${i//*\//}](https://${acc_region}.console.aws.amazon.com/route53/v2/hostedzones#ListRecordSets/${i//*\//}) | unknown | unknown | unknown | ${account} |" >> "${docFile}"
+    done
+    echo "${resource}" > "${docDir}"/resource.json
+  else
+    rm -rf "${docFile}"
+  fi
+
+  cleanup
+}
+

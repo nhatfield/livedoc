@@ -1,0 +1,91 @@
+create_vpc_attributes() {
+  echo "**${provider} ${dirAlias} Attributes**
+
+* **Environment:** \`${env}\`
+* **ID:** [${vpc}](https://${acc_region}.console.aws.amazon.com/vpc/home?region=${acc_region}#VpcDetails:VpcId=${vpc})
+* **State:** \`${state}\`
+* **Cidr:** \`${ip}\`"
+}
+
+
+get_vpc() {
+  dirAlias=VPC 
+  set_docDir
+  docFile="${docDir}/all.md"
+
+  logInfo "running scan on ${acc_alias} ${acc_region}"
+  resource=$(aws ec2 describe-vpcs 2>/dev/null | jq '.Vpcs[] | select(.IsDefault != true)') || logWarn "could not describe any vpcs"
+
+  resource_ids=$(jq -r '.VpcId' <<< "${resource}") || logWarn "no vpcs discovered"
+
+  if [ "${resource}" ]; then
+    echo "**${acc_alias} (${account})**" > "${docFile}"
+    echo >> "${docFile}"
+    echo "**count:** $(wc -l <<< "${resource_ids}")" >> "${docFile}"
+    echo >> "${docFile}"
+    echo "| Name | Environment | ID | State | CIDR | Account ID |" >> "${docFile}"
+    echo "|:-----|-------------|:--:|:-----:|:----:|------------|" >> "${docFile}"
+    jq -r --arg reg "${acc_region}" --arg acc "${account}" --arg env "${aws_environment_tag_name}" '"| [" +
+           (select(.Tags != null) | .Tags[] | select(.Key != null) | select(.Key == "Name").Value) +
+             "](" + (select(.Tags != null) | .Tags[] | select(.Key != null) | select(.Key == "Name").Value) +
+           ".md) | " +
+           (select(.Tags != null) | .Tags[] | select(.Key != null) | select(.Key == $env).Value) +
+           " | [" +
+           (.VpcId) +
+             "](https://" + $reg + ".console.aws.amazon.com/vpc/home?region=" + $reg + "#VpcDetails:VpcId=" + (.VpcId) +
+           ") | " +
+           (.State) +
+           " | " +
+           (.CidrBlock) +
+           " | " +
+           $acc +
+           " |"' <<< "${resource}" 2>/dev/null >> "${docFile}" || logWarn "all vpcs are missing one or more required tags [${aws_environment_tag_name}|Name]."
+  fi
+  
+  validate_vpc
+
+  if [ "${resource_ids}" ]; then  
+    for i in ${resource_ids}; do
+      logInfo "creating document for ${i}"
+      me=($(jq -r --arg i "${i}" 'select(.VpcId == $i) | .State, .CidrBlock' <<< "${resource}"))
+  
+      name=$(jq -r --arg i "${i}" 'select(.VpcId == $i) | .Tags[] | select(.Key == "Name").Value' <<< "${resource}" 2>/dev/null) || true
+      env=$(jq -r --arg i "${i}" --arg env "${aws_environment_tag_name}" 'select(.VpcId == $i) | .Tags[] | select(.Key == $env).Value' <<< "${resource}" 2>/dev/null) || true
+      infra_timestamp=$(jq -r --arg i "${i}" --arg tagname "${change_control_timestamp_infra_tag_name}" 'select(.VpcId == $i) | .Tags[] | select(.Key == $tagname).Value' <<< "${resource}" 2>/dev/null) || true
+      os_timestamp=$(jq -r --arg i "${i}" --arg tagname "${change_control_timestamp_os_tag_name}" 'select(.VpcId == $i) | .Tags[] | select(.Key == $tagname).Value' <<< "${resource}" 2>/dev/null) || true
+      sourceOsPath=$(jq -r --arg i "${i}" --arg tagname "${source_control_os_tag_name}" 'select(.VpcId == $i) | .Tags[] | select(.Key == $tagname).Value' <<< "${resource}" 2>/dev/null) || true
+      sourceInfraPath=$(jq -r --arg i "${i}" --arg tagname "${source_control_infra_tag_name}" 'select(.VpcId == $i) | .Tags[] | select(.Key == $tagname).Value' <<< "${resource}" 2>/dev/null) || true
+      
+      state=${me[0]:-""}
+      ip=${me[1]:-""}
+      vpc=${i}
+  
+      if [ "${name}" ] && [ "${env}" ]; then
+        filename=${name}
+      else
+        [ "${name}" ] || name=NULL
+        [ "${env}" ] || env=NULL
+        filename=${i}
+      fi
+  
+      docFile=${docDir}/${filename}.md
+      attributes=$(create_vpc_attributes)
+      create_monitor_attributes false
+      docit
+    done
+  fi
+}
+
+validate_vpc() {
+  if [ "${resource_ids}" ]; then
+    for i in ${resource_ids}; do
+      grep -q "${i}" "${docFile}" || echo "| [unknown](${i}.md) | \`NULL\` | [${i}](https://${acc_region}.console.aws.amazon.com/vpc/home?region=${acc_region}#VpcDetails:VpcId=${i}) | unknown | unknown | ${account} |" >> "${docFile}"
+    done
+    echo "${resource}" > "${docDir}"/resource.json
+  else
+    rm -rf "${docFile}"
+  fi
+
+  cleanup
+}
+

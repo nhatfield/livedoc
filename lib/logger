@@ -1,0 +1,41 @@
+logInfo() {
+  msg=${1:-""}
+  provider=${provider:-"local"}
+  thread=${dirAlias:-"main"}
+  level=INFO
+  error_file="${homeDir}/.${provider}.${thread}.error"
+
+  echo "$(date +%Y-%m-%dT%H:%M:%S) [${level}] [${provider,,}] [${thread,,}] - ${msg}" >> "${logpath}/${logfile}"
+}
+
+logWarn() {
+  msg=${1:-""}
+  provider=${provider:-"local"}
+  thread=${dirAlias:-"main"}
+  level=WARN
+  error_file="${homeDir}/.${provider}.${thread}.error"
+
+  echo "$(date +%Y-%m-%dT%H:%M:%S) [${level}] [${provider,,}] [${thread,,}] - ${msg}" >> "${logpath}/${logfile}"
+}
+
+logErr() {
+  msg=${1:-""}
+  provider=${provider:-"local"}
+  thread=${dirAlias:-"main"}
+  level=ERROR
+  error_file="${homeDir}/.${provider}.${thread}.error"
+
+  echo "$(date +%Y-%m-%dT%H:%M:%S) [${level}] [${provider,,}] [${thread,,}] - ${msg}" >> "${logpath}/${logfile}"
+}
+
+logDebug() {
+  msg=${1:-""}
+  provider=${provider:-"local"}
+  thread=${dirAlias:-"main"}
+  level=DEBUG
+  error_file="${homeDir}/.${provider}.${thread}.error"
+
+  if [ "${debug}" == "true" ]; then
+    echo -e "$(date +%Y-%m-%dT%H:%M:%S) [${level}] [${provider,,}] [${thread,,}] - ${msg}" >> "${logpath}/${logfile}"
+  fi
+}

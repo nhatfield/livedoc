@@ -1,0 +1,7 @@
+build_site() {
+  if [ "${site_stage}" == "prod" ]; then
+    mkdocs build
+  else
+    echo "site_stage: ${site_stage}"
+  fi
+}

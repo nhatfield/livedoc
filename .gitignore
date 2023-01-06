@@ -1,0 +1,7 @@
+**temp**
+**tmp**
+docs/*
+!docs/index.md
+!docs/about.md
+!docs/javascripts*
+!docs/stylesheets*

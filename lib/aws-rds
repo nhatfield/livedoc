@@ -1,0 +1,176 @@
+create_rds_attributes() {
+  echo "**${provider} ${dirAlias} Attributes**
+
+* **Environment:** \`${env}\`
+* **VPC:** [${vpc}](https://${acc_region}.console.aws.amazon.com/vpc/home?region=${acc_region}#VpcDetails:VpcId=${vpc})
+* **State:** \`${state}\`
+* **Type:** \`${type}\`
+* **Instance ID:** \`${id}\`
+* **Address:** \`${ip}\`
+* **Port:** \`${port}\`
+* **Engine:** \`${engine}\`
+* **Version:** \`${engineVersion}\`
+* **Delete Protection:** \`${delete}\`
+* **Public:** \`${public}\`
+* **License:** \`${license}\`
+* **Multi-AZ:** \`${az}\`
+* **Clustered:** \`${cluster:-"false"}\`
+* **Encrypted Store:** \`${encryption}${encryptionType}\`
+* **IAM Authentication:** \`${auth}\`
+* **Backup Window:** \`${backup}\`
+* **Backup Retention:** \`${backupRet}\`
+* **Maintenance Window:** \`${maint}\`
+* **Auto Minor Upgrade:** \`${autoUpgrade}\`
+${extraAttributes}"
+}
+
+get_rds_instances() {
+  dirAlias=RDS
+  set_docDir
+  docFile="${docDir}/all.md"
+
+  logInfo "running scan on ${acc_alias} ${acc_region}"
+  resource=$(aws rds describe-db-instances 2>/dev/null | jq '.DBInstances[]') || logWarn "could not describe any rds instances"
+
+  resource_ids=$(jq -r '.DBInstanceIdentifier' <<< "${resource}") || logWarn "no rds instances discovered"
+
+  if [ "${resource}" ]; then
+    echo "**${acc_alias} (${account})**" > "${docFile}"
+    echo >> "${docFile}"
+    echo "**count:** $(wc -l <<< "${resource_ids}")" >> "${docFile}"
+    echo >> "${docFile}"
+    echo "| Name | Environment | State | Instance Type | Instance ID | Address | VPC | Account ID |" >> "${docFile}"
+    echo "|:-----|-------------|:-----:|:-------------:|:------------|:-------:|:----|------------|" >> "${docFile}"
+    jq -r --arg reg "${acc_region}" --arg acc "${account}" --arg env "${aws_environment_tag_name}" '"| [" +
+           (select(.Tags != null) | .Tags[] | select(.Key != null) | select(.Key == "Name").Value) +
+             "](" + (select(.Tags != null) | .Tags[] | select(.Key != null) | select(.Key == "Name").Value) +
+           ".md) | " +
+           (select(.Tags != null) | .Tags[] | select(.Key != null) | select(.Key == $env).Value) +
+           " | " +
+           (.DBInstanceStatus) +
+           " | " +
+           (.DBInstanceClass) +
+           " | [" +
+             (.DBInstanceIdentifier) +
+               "](https://" + $reg + ".console.aws.amazon.com/rds/home?region=" + $reg + "#database:id=" + (.DBInstanceIdentifier) + 
+                 ";is-cluster=false") | " +
+           (.Endpoint.Address) +
+           " | [" +
+           (.DBSubnetGroup.VpcId) +
+             "](https://" + $reg + ".console.aws.amazon.com/vpc/home?region=" + $reg + "#VpcDetails:VpcId=" + (.DBSubnetGroup.VpcId) +
+           ") | " +
+           $acc +
+           " |"' <<< "${resource}" 2>/dev/null >> "${docFile}" || logWarn "all instances are missing one or more required tags [${aws_environment_tag_name}|Name]."
+  fi
+  
+  validate_rds_instances
+  
+  if [ "${resource_ids}" ]; then
+    for i in ${resource_ids}; do
+      logInfo "creating document for ${i}"
+      me=($(jq -r --arg i "${i}" 'select(.DBInstanceIdentifier == $i) | .DBInstanceStatus, .DBInstanceClass, .Endpoint.Address, .Endpoint.Port, .DBSubnetGroup.VpcId, .Engine, .EngineVersion, .DeletionProtection, .PubliclyAccessible, .LicenseModel, .MultiAZ, .StorageEncrypted, .IAMDatabaseAuthenticationEnabled, .PreferredBackupWindow, .BackupRetentionPeriod, .PreferredMaintenanceWindow, .AutoMinorVersionUpgrade' <<< "${resource}"))
+  
+      name=$(jq -r --arg i "${i}" 'select(.DBInstanceIdentifier == $i) | .Tags[] | select(.Key == "Name").Value' <<< "${resource}" 2>/dev/null) || true
+      env=$(jq -r --arg i "${i}" --arg env "${aws_environment_tag_name}" 'select(.DBInstanceIdentifier == $i) | .Tags[] | select(.Key == $env).Value' <<< "${resource}" 2>/dev/null) || true
+      infra_timestamp=$(jq -r --arg i "${i}" --arg tagname "${change_control_timestamp_infra_tag_name}" 'select(.DBInstanceIdentifier == $i) | .Tags[] | select(.Key == $tagname).Value' <<< "${resource}" 2>/dev/null) || true
+      os_timestamp=$(jq -r --arg i "${i}" --arg tagname "${change_control_timestamp_os_tag_name}" 'select(.DBInstanceIdentifier == $i) | .Tags[] | select(.Key == $tagname).Value' <<< "${resource}" 2>/dev/null) || true
+      sourceOsPath=$(jq -r --arg i "${i}" --arg tagname "${source_control_os_tag_name}" 'select(.DBInstanceIdentifier == $i) | .Tags[] | select(.Key == $tagname).Value' <<< "${resource}" 2>/dev/null) || true
+      sourceInfraPath=$(jq -r --arg i "${i}" --arg tagname "${source_control_infra_tag_name}" 'select(.DBInstanceIdentifier == $i) | .Tags[] | select(.Key == $tagname).Value' <<< "${resource}" 2>/dev/null) || true
+      cluster=$(jq -r --arg i "${i}" 'select(.DBInstanceIdentifier == $i) | select(.DBClusterIdentifier != null) | .DBClusterIdentifier' <<< "${resource}") || true
+      kms=$(jq -r --arg i "${i}" 'select(.DBInstanceIdentifier == $i) | select(.KmsKeyId != null) | .KmsKeyId' <<< "${resource}") || true
+      secGroups=$(jq -r --arg i "${i}" 'select(.DBInstanceIdentifier == $i) | (select(.DBSecurityGroups != null) | select(.DBSecurityGroups[] != null) | .DBSecurityGroups[].DBSecurityGroupId)' <<< "${resource}")
+      vpcSecGroups=$(jq -r --arg i "${i}" 'select(.DBInstanceIdentifier == $i) | (select(.VpcSecurityGroups != null) | select(.VpcSecurityGroups[] != null) | .VpcSecurityGroups[].VpcSecurityGroupId)' <<< "${resource}")
+
+  
+      state=${me[0]:-""}
+      type=${me[1]:-""}
+      ip=${me[2]:-""}
+      port=${me[3]:-""}
+      vpc=${me[4]:-""}
+      engine=${me[5]:-""}
+      engineVersion=${me[6]:-""}
+      delete=${me[7]:-""}
+      public=${me[8]:-""}
+      license=${me[9]:-""}
+      az=${me[10]:-""}
+      encryption=${me[11]:-""}
+      auth=${me[12]:-""}
+      backup=${me[13]:-""}
+      backupRet=${me[14]:-""}
+      maint=${me[15]:-""}
+      autoUpgrade=${me[16]:-""}
+  
+      id=${i}
+      encryptionType=
+  
+      if [ "${name}" ] && [ "${env}" ]; then
+        filename=${name}
+      else
+        [ "${name}" ] || name=NULL
+        [ "${env}" ] || env=NULL
+        filename=${i}
+      fi
+  
+      if [ "${kms}" ]; then
+        encryptionType=" (kms)"
+      fi
+
+      extraAttributes=
+      if [ "${secGroups}" ]; then
+        [ "${extraAttributes}" ] && extraAttributes="${extraAttributes}
+* **DB Security Groups:**
+$(for i in ${secGroups}; do echo "  * ${i}"; done)" || extraAttributes="* **DB Security Groups:**
+$(for i in ${secGroups}; do echo "  * ${i}"; done)"
+      fi
+
+      if [ "${vpcSecGroups}" ]; then
+        [ "${extraAttributes}" ] && extraAttributes="${extraAttributes}
+* **VPC Security Groups:**
+$(for i in ${vpcSecGroups}; do echo "  * ${i}"; done)" || extraAttributes="* **VPC Security Groups:**
+$(for i in ${vpcSecGroups}; do echo "  * ${i}"; done)"
+      fi
+
+  
+      docFile=${docDir}/${filename}.md
+      attributes=$(create_rds_attributes)
+      create_monitor_attributes true
+      docit
+    done
+  fi
+}
+
+validate_rds_instances() {
+  if [ "${resource_ids}" ]; then
+    for i in ${resource_ids}; do
+      clustered=$(jq -r --arg i "${i}" 'select(.DBInstanceIdentifier == $i) | select(.DBClusterIdentifier != null) | .DBClusterIdentifier' <<< "${resource}") || true
+      engine=$(jq -r --arg i "${i}" 'select(.DBInstanceIdentifier == $i) | select(.Engine != null) | .Engine' <<< "${resource}") || true
+      if [ "${clustered}" ]; then
+        cluster=true
+      else
+        cluster=false
+      fi
+
+      if [ "${engine}" = "neptune" ]; then
+        if [ "${clustered}" ]; then
+          url="https://${acc_region}.console.aws.amazon.com/${engine}/home?region=${acc_region}#database:id=${clustered};is-cluster=${cluster};tab=connectivity"
+        else
+          url="https://${acc_region}.console.aws.amazon.com/${engine}/home?region=${acc_region}#database:id=${i};is-cluster=${cluster};tab=connectivity"
+        fi
+      else
+        url="https://${acc_region}.console.aws.amazon.com/rds/home?region=${acc_region}#database:id=${i};is-cluster=${cluster}"
+      fi
+
+      if [ "$(grep "${i}" "${docFile}")" ]; then
+        sed -i "s%https://${acc_region}.console.aws.amazon.com/rds/home?region=${acc_region}#database:id=${i};is-cluster=false%${url}%" "${docFile}"
+      else
+        echo "| [unknown](${i}.md) | \`NULL\` | unknown | unknown | [${i}](${url}) | unknown | unknown | ${account} |" >> "${docFile}"
+      fi
+    done
+    echo "${resource}" > "${docDir}"/resource.json
+  else
+    rm -rf "${docFile}"
+  fi
+
+  cleanup
+}
+

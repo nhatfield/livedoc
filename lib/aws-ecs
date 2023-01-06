@@ -1,0 +1,191 @@
+create_ecs_attributes() {
+  echo "**${provider} ${dirAlias} Attributes**
+
+* **Cluster:** \`${cluster}\`
+* **Environment:** \`${env}\`
+* **State:** \`${state}\`
+* **Type:** \`${type}\`
+* **Service ID:** \`${id}\`
+* **Load Blancer:** \`${ip}\`
+* **Desired Count:** \`${desired}\`
+* **Running Count:** \`${running}\`
+* **Pending Count:** \`${pending}\`
+* **Task Definition:** \`${taskdef}\`
+* **Deployment Strategy:** \`${strategy}\`
+${extraAttributes}
+
+<br>
+
+<details>
+  <summary>Event Log</summary>
+    <table>
+    <tr>
+      <th>Timestamp</th>
+      <th>Event ID</th>
+      <th>Message</th>
+    </tr>
+${events} 
+    </table>
+</details>"
+}
+
+get_ecs_clusters() {
+  aws ecs list-clusters | jq -r '.clusterArns[]'
+}
+
+list_ecs_services() {
+  aws ecs list-services --cluster ${c} | jq -r '.serviceArns[]'
+}
+
+get_ecs_services() {
+  for c in $(get_ecs_clusters); do
+    list=$(list_ecs_services)
+    n=0
+    serviceList=
+
+    for l in ${list}; do
+      if [ "${n}" -lt 9 ]; then
+        if [ "${serviceList}" ]; then
+          serviceList="${serviceList} ${l}"
+        else
+          serviceList="${l}"
+        fi
+
+        ((n++)) || true
+      else
+        if [ "${serviceList}" ]; then
+          serviceList="${serviceList} ${l}"
+        else
+          serviceList="${l}"
+        fi
+
+        aws ecs describe-services --services ${serviceList} --cluster ${c}
+        serviceList=
+        n=0
+      fi
+    done
+
+    if [ "${serviceList}" ]; then
+      aws ecs describe-services --services ${serviceList} --cluster ${c}
+    fi
+  done
+}
+
+get_ecs() {
+  dirAlias=ECS 
+  set_docDir
+  docFile="${docDir}/all.md"
+
+  logInfo "running scan on ${acc_alias} ${acc_region}"
+  resource=$(get_ecs_services 2>/dev/null | jq '.services[]') || true
+
+  resource_ids=$(jq -r '.deployments[].id' <<< "${resource}") || true
+
+  if [ "${resource}" ]; then
+    echo "**${acc_alias} (${account})**" > "${docFile}"
+    echo >> "${docFile}"
+    echo "**count:** $(wc -l <<< "${resource_ids}")" >> "${docFile}"
+    echo >> "${docFile}"
+    echo "| Name | State | Service ID | Account ID |" >> "${docFile}"
+    echo "|:-----|:-----:|:-----------|:----------:|" >> "${docFile}"
+    jq -r --arg reg "${acc_region}" --arg acc "${account}" '"| [" +
+           (.serviceName) +
+             "](" + (.serviceName) +
+           ".md) | " +
+           (.status) +
+           " | [" +
+           (.deployments[].id) +
+               "](https://" + $reg + ".console.aws.amazon.com/ecs/home?region=" + $reg + "#/clusters/" + (.deployments[].id) +
+           ") | " +
+           $acc +
+           " |"' <<< "${resource}" 2> "${error_file}" >> "${docFile}" || logErr "something went wrong trying to parse ecs services. got error: $(< ${error_file})"
+  fi
+  
+  validate_ecs
+
+
+  if [ "${resource_ids}" ]; then  
+    for i in ${resource_ids}; do
+      logInfo "creating document for ${i//*\//}"
+      me=($(jq -r --arg i "${i}" 'select(.deployments[].id == $i) | .serviceName, .status, .serviceArn, .desiredCount, .runningCount, .pendingCount, .taskDefinition, .schedulingStrategy, .clusterArn' <<< "${resource}"))
+      events=$(jq -r --arg i "${i}" 'select(.deployments[].id == $i) | .events[] | "<tr>\n<td>\(.createdAt)</td>\n<td>\(.id)</td>\n<td>\(.message)</td>\n</tr>"' <<< "${resource}")
+  
+      serviceName=${me[0]:-""}
+      state=${me[1]:-""}
+      serviceArn=${me[2]:-""}
+      desired=${me[3]:-""}
+      running=${me[4]:-""}
+      pending=${me[5]:-""}
+      taskdef=${me[6]:-""}
+      strategy=${me[7]:-""}
+      clusterArn=${me[8]:-""}
+
+      ecsTags=$(aws ecs list-tags-for-resource --resource-arn ${serviceArn} 2> "${error_file}") || logErr "something went wrong while searching ecs tags. got error: $(< ${error_file})"
+
+      name=$(jq -r '.Tags[] | select(.Key == "Name").Value' <<< "${ecsTags}"i 2>/dev/null) || true
+      env=$(jq -r --arg env "${aws_environment_tag_name}" '.Tags[] | select(.Key == $env).Value' <<< "${ecsTags}" 2>/dev/null) || true
+      infra_timestamp=$(jq -r --arg tagname "${change_control_timestamp_infra_tag_name}" '.Tags[] | select(.Key == $tagname).Value' <<< "${ecsTags}" 2>/dev/null) || true
+      os_timestamp=$(jq -r --arg tagname "${change_control_timestamp_os_tag_name}" '.Tags[] | select(.Key == $tagname).Value' <<< "${ecsTags}" 2>/dev/null) || true
+      sourceOsPath=$(jq -r --arg tagname "${source_control_os_tag_name}" '.Tags[] | select(.Key == $tagname).Value' <<< "${ecsTags}" 2>/dev/null) || true
+      sourceInfraPath=$(jq -r --arg tagname "${source_control_infra_tag_name}" '.Tags[] | select(.Key == $tagname).Value' <<< "${ecsTags}" 2>/dev/null) || true
+      
+      checkLB=$(jq -r --arg i "${i}" 'select(.deployments[].id == $i) | select(.loadBalancers != null) | select(.loadBalancers[].targetGroupArn != null) | .targetGroupArn' <<< "${resource}")
+      checkType=$(jq -r --arg i "${i}" 'select(.deployments[].id == $i) | select(.launchType != null) | .launchType' <<< "${resource}")
+      secGroups=$(jq -r --arg i "${i}" 'select(.deployments[].id == $i) | select(.deployments[].networkConfiguration != null) | select(.deployments[].networkConfiguration.securityGroups != null) | select(.deployments[].networkConfiguration.securityGroups[] != null) | .deployments[].networkConfiguration.securityGroups[]' <<< "${resource}")
+  
+      id=${i//*\//}
+      if [ "${checkLB}" ]; then
+        ip=true
+      else
+        ip=false
+      fi
+
+      if [ "${checkType}" == "EC2" ]; then
+        type=ec2
+      else
+        type=fargate
+      fi
+
+      [ "${name}" ] || name=NULL
+      [ "${env}" ] || env=NULL
+
+      taskdef=${taskdef//*task-definition\//}
+      cluster=${clusterArn//*\//}
+
+      extraAttributes=
+      if [ "${secGroups}" ]; then
+        [ "${extraAttributes}" ] && extraAttributes="${extraAttributes}
+* **Security Groups:**
+$(for i in ${secGroups}; do echo "  * ${i}"; done)" || extraAttributes="* **Security Groups:**
+$(for i in ${secGroups}; do echo "  * ${i}"; done)"
+      fi
+  
+      filename=${serviceName}
+      docFile=${docDir}/${filename}.md
+      attributes=$(create_ecs_attributes)
+      create_monitor_attributes true
+      docit
+    done
+  fi
+}
+
+validate_ecs() {
+  if [ "${resource_ids}" ]; then
+    for i in ${resource_ids}; do
+      cluster=$(jq -r --arg i "${i}" 'select(.deployments[].id == $i) | .clusterArn' <<< "${resource}")
+      serviceName=$(jq -r --arg i "${i}" 'select(.deployments[].id == $i) | .serviceName' <<< "${resource}")
+
+      if [ "$(grep "${i}" "${docFile}")" ]; then
+        sed -i "s%https://${acc_region}.console.aws.amazon.com/ecs/home?region=${acc_region}#/clusters/${i}%https://${acc_region}.console.aws.amazon.com/ecs/home?region=${acc_region}#/clusters/${cluster//*\//}/services/${serviceName}/details%" "${docFile}"
+      else
+        echo "| [unknown](${i//*\//}.md) | unknown | [${i}](https://${acc_region}.console.aws.amazon.com/ecs/home?region=${acc_region}#/clusters/${cluster//*\//}/services/${serviceName}/details) | ${account} |" >> "${docFile}"
+      fi
+    done
+    echo "${resource}" > "${docDir}"/resource.json
+  else
+    rm -rf "${docFile}"
+  fi
+
+  cleanup
+}
+

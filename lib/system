@@ -1,0 +1,280 @@
+summarize() {
+  dirAlias=sys.summary
+  logInfo "summarizing details"
+  cd ${homeDir}/docs/${provider}/
+  sum_accounts=$(ls)
+  sum_accounts_count=$(wc -l <<< "${sum_accounts}")
+  title="${provider} (${sum_accounts_count})"
+  summary=$(sumStart && sumSum)
+  domains=
+  compute=
+  network=
+
+  for accs in ${sum_accounts}; do
+    cd "${accs}"
+    unknownResource=
+    sum_regions=$(ls)
+    sum_regions_count=$(wc -l <<< "${sum_regions}")
+    headers=$(ls */ | grep -v '/:\|^$' | sort -u)
+    title="${accs}"
+    summary="${summary}
+      $(sumStart && sumSum && sumStartTable)"
+
+    sumHeadTableBody="<th>Regions</th>
+      $(sed 's%^%<th>%;s%$%</th>%' <<< "${headers}")"
+    summary="${summary}
+      $(sumHeadTable)"
+
+    for reg in ${sum_regions}; do
+      sumBodyTableBody="<td>${reg}</td>"
+      
+      for h in ${headers}; do
+        if [ -d "${reg}/${h}" ]; then
+          hcount=$(wc -l <<< "$(ls -l ${reg}/${h}/ | grep -v 'total\|all.md')")
+          ucount=$(grep -c 'unknown' ${reg}/${h}/all.md)
+          docLocation="${provider}/${accs}/${reg}/${h}/all/"
+
+          if [[ "${domain_services}" = *"${h}"* ]]; then
+            providerDomainService="${h}"
+            if [ "${domains}" ]; then
+              domains="${domains}
+$(grep "Zone Name:" ${reg}/${h}/*.md | sed 's%`%%g' | awk '{print $NF}' | sort | awk -v acc="${accs}" '{print $NF"##"acc}')"
+            else
+              domains="$(grep "Zone Name:" ${reg}/${h}/*.md | sed 's%`%%g' | awk '{print $NF}' | sort | awk -v acc="${accs}" '{print $NF"##"acc}')" 
+            fi
+          fi
+
+          if [[ "${network_services}" = *"${h}"* ]]; then
+            providerNetworkService="${h}"
+            if [ "${network}" ]; then
+              network="${network}
+$(grep "\[.*\]" ${reg}/${h}/all.md | sed "s%(\(.*\).md)%(${provider}/${accs}/${reg}/${h}/\1/)%;s% [0-9][0-9][0-9][0-9][0-9]*[0-9] % ${accs} %")"
+            else
+              network="$(grep "\[.*\]" ${reg}/${h}/all.md | sed "s%(\(.*\).md)%(${provider}/${accs}/${reg}/${h}/\1/)%;s% [0-9][0-9][0-9][0-9][0-9]*[0-9] % ${accs} %")"
+            fi
+          fi
+ 
+          if [[ "${compute_services}" = *"${h}"* ]]; then
+            providerComputeService="${h}"
+            if [ "${compute}" ]; then
+              compute="${compute}
+$(grep "\[.*\]" ${reg}/${h}/all.md | sed "s%(\(.*\).md)%(${provider}/${accs}/${reg}/${h}/\1/)%;s% [0-9][0-9][0-9][0-9][0-9]*[0-9] % ${accs} %")"
+            else
+              compute="$(grep "\[.*\]" ${reg}/${h}/all.md | sed "s%(\(.*\).md)%(${provider}/${accs}/${reg}/${h}/\1/)%;s% [0-9][0-9][0-9][0-9][0-9]*[0-9] % ${accs} %")"
+            fi
+          fi
+
+          if [ "${ucount}" -gt 0 ]; then
+            unknowns=" <span>&#9888;</span>"
+            unknownResource=true
+          else
+            unknowns=" <span>&#10003;</span>"
+          fi
+        else
+          hcount=0
+          docLocation=""
+          unknowns=""
+        fi
+        sumBodyTableBody="${sumBodyTableBody}
+          <td><a href='${docLocation}'>${hcount}${unknowns}</a></td>"
+
+      done
+
+      summary="${summary}
+        $(sumBodyTable)"
+    done 
+
+    summary="${summary}
+      $(sumEndTable && sumend)"
+
+    if [ "${unknownResource}" = "true" ]; then
+      status="<span>\&#9888;</span>"
+    else
+      status="<span>\&#10003;</span>"
+    fi
+    summary=$(sed "s%<summary>${accs}</summary>%<summary>${accs} ${status}</summary>%" <<< "${summary}")
+    cd ..
+  done
+
+  echo "${summary}" >> "${homeDir}"/docs/index.md
+  [ "${domains}" ] && echo "${domains}" > "${homeDir}"/"${provider}"."${providerDefaultRegion}"."${providerDomainService}".domains || logInfo "no domain resources were located for this provider"
+  [ "${compute}" ] && echo "${compute}" > "${homeDir}"/"${provider}".compute || logInfo "no compute resources were located for this provider"
+  [ "${network}" ] && echo "${network}" > "${homeDir}"/"${provider}".network || logInfo "no network resources were located for this provider"
+  cd "${homeDir}"
+}
+
+sumStart() {
+  echo "<details>"
+}
+
+sumSum() {
+  echo "  <summary>${title}</summary>"
+}
+
+sumStartTable() {
+  echo "    <table>"
+}
+
+sumHeadTable() {
+  echo "        <tr>
+    ${sumHeadTableBody}
+              </tr>"
+}
+
+sumBodyTable() {
+  echo "          <tr>
+    ${sumBodyTableBody}
+              </tr>"
+}
+
+sumEndTable() {
+  echo "    </table>"
+}
+
+sumend() {
+  echo "</details>
+
+"
+}
+
+domain_summary() {
+  dirAlias=sys.summary.domain
+  cd "${homeDir}"
+  title=Domains
+
+  sumHeadTableBody="<th>Name(s)</th>
+    <th>Count</th>
+    <th>Provider</th>
+    <th>Account</th>"
+
+  summary=$(sumStart \
+    && sumSum \
+    && sumStartTable \
+    && sumHeadTable)
+  
+
+  for f in *.domains*; do
+    if [ -f "${f}" ]; then
+      meta=($(awk -F "." '{print $1"\n"$2"\n"$3}' <<< "${f}"))
+      provider=${meta[0]}
+      providerDefaultRegion=${meta[1]}
+      providerDomainService=${meta[2]}
+
+      logInfo "consuming domain file: ${f}"
+      domainAccounts=$(awk -F "##" '{print $2}' "${f}" | sort | uniq -d) || logErr "could not get domain accounts from: ${f}"
+
+      for acc in ${domainAccounts}; do
+        logInfo "creating table for account: ${acc}"
+        accDomains=$(grep "${acc}" "${f}" | awk -F "##" '{print "<li>"$1"</li>"}')
+        accDomainsCount=$(wc -l <<< "${accDomains}")
+        sumBodyTableBody="<td>
+            <ul>
+              ${accDomains}
+            </ul>
+          </td>
+          <td style=\"text-align: center\">${accDomainsCount}</td>  
+          <td style=\"text-align: center\">${provider}</td>
+          <td style=\"text-align: center\"><a href='${provider}/${acc}/${providerDefaultRegion}/${providerDomainService}/all/'>${acc}</a></td>"
+
+        summary="${summary}
+          $(sumBodyTable)"
+      done
+      rm -f "${f}"
+    fi
+  done
+
+  summary="${summary}
+    $(sumEndTable && sumend)"
+
+
+  index=$(< "${homeDir}"/docs/index.md)
+  index="${summary}
+${index}"
+ 
+  echo "${index}" > "${homeDir}"/docs/index.md
+}
+
+compute_summary() {
+  dirAlias=sys.summary.compute
+  cd "${homeDir}"
+  title=Compute
+
+  sumHeadTableBody="<th>Name(s)</th>
+    <th>Environment</th>
+    <th>State</th>
+    <th>Compute Type</th>
+    <th>Compute ID</th>
+    <th>Address</th>
+    <th>Network ID</th>
+    <th>Account</th>
+    <th>Provider</th>"
+ 
+  common_summary
+}
+
+network_summary() {
+  dirAlias=sys.summary.network
+  cd "${homeDir}"
+  title=Network
+
+  sumHeadTableBody="<th>Name(s)</th>
+    <th>Environment</th>
+    <th>Network ID</th>
+    <th>State</th>
+    <th>CIDR</th>
+    <th>Account</th>
+    <th>Provider</th>"
+
+  common_summary
+}
+
+common_summary() {
+  summary=$(sumStart \
+    && sumSum \
+    && sumStartTable \
+    && sumHeadTable)
+
+  Unknown=0
+
+  for f in *.${title,,}*; do
+    if [ -f "${f}" ]; then
+      provider=$(awk -F "." '{print $1}' <<< "${f}")
+
+      logInfo "consuming ${title,,} file: ${f}"
+
+      while read -r line; do
+        if [ "${line}" ]; then
+          if [[ ! "${line}" = *"unknown"* ]]; then
+            resourceLine=$(sed 's%^| %<td>%;s% |$%</td>%;s% | %</td>\n<td>%g' <<< "${line}") || logErr "could not consume ${title,,} file line: ${line}"
+            resourceLineClean=$(for s in ${resourceLine}; do echo "${s}" | sed "s%\[\(.*\)\](\(.*\))%<a href='\2'>\1</a>%g"; done)
+    
+            sumBodyTableBody="${resourceLineClean}
+              <td style=\"text-align: center\">${provider}</td>"
+    
+            summary="${summary}
+              $(sumBodyTable)"
+          else
+            ((Unknown++)) || logWarn "detected unknown ${title,,} resources. please add the appropriate tags for your application"
+          fi
+        fi
+      done < "${f}" 2> "${error_file}" || logErr "failed to read '${f}'. Got error: $(< ${error_file})"
+
+      #rm -f "${f}"
+    fi
+  done
+
+  sumBodyTableBody="<td>Unknown: ${Unknown}</td>"
+
+  summary="${summary}
+    $(sumBodyTable)"
+
+  summary="${summary}
+    $(sumEndTable && sumend)"
+
+
+  index=$(< "${homeDir}"/docs/index.md)
+  index="${summary}
+${index}"
+
+  echo "${index}" > "${homeDir}"/docs/index.md
+}

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+source="${BASH_SOURCE[0]}"
+while [ -h "${source}" ]; do
+  dir="$(cd -P "$(dirname "${source}")" && pwd)"
+  source="$()readlink ${source})"
+  [[ ${source} != /* ]] && source="${dir}/${source}"
+done
+binDir="$(cd -P "$(dirname "${source}")" && pwd)"
+cd "${binDir}"/../
+
+homeDir=$(pwd)
+provider=AWS
+providerDefaultRegion=us-east-1
+
+for l in lib/*; do
+  # shellcheck source=src/util.sh
+  . "${l}"
+done
+
+get_config
+
+
+case ${aws_collector_enabled} in
+                              true)
+                                n=1
+                                scan${provider}
+                                for arn in ${aws_assume_arns}; do
+                                  scan${provider}
+                                  reset_account
+                                  ((n++)) || true
+                                done
+                                [ "${summary_enabled}" = true ] && summarize || logWarn "summary disabled. Hint: summary_enabled=${summary_enabled}"
+                                ;;
+                              *)
+                                logInfo "${provider} collection disabled. Hint: ${provider,,}_collector_enabled=${aws_collector_enabled}"
+                                ;;
+esac

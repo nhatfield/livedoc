@@ -1,0 +1,50 @@
+get_aws_account() {
+  arn=${arn:-""}
+  
+  if [ ! -d "${HOME}"/.aws ] || [ ! -f "${HOME}"/.aws/credentials ]; then
+    mkdir -p "${HOME}"/.aws 2>/dev/null || logWarn "aws credentials directory already exists"
+    file="${HOME}/.aws/credentials"
+
+    if [ ! -f "${file}" ]; then
+      if [ "${AWS_DEFAULT_REGION}" ]; then
+        region=${AWS_DEFAULT_REGION}
+      else
+        region=$(awk -F ' ' '{print $1}' <<< "${aws_regions}")
+        region=${region:-"us-east-1"}
+   
+        logWarn "could not detect AWS_DEFAULT_REGION. defaulting to region: ${region}"
+      fi
+
+      echo "[default]" > "${file}"
+
+      [ "${AWS_ACCESS_KEY_ID}" ] && echo "aws_access_key_id=${AWS_ACCESS_KEY_ID}" >> "${file}" || logInfo "no aws key id found. relying on local role"
+      [ "${AWS_SECRET_ACCESS_KEY}" ] && echo "aws_secret_access_key=${AWS_SECRET_ACCESS_KEY}" >> "${file}" || logInfo "no aws secret key found. relying on local role"
+
+      echo "region=${region}" >> "${file}"
+    fi
+  fi
+
+  if [ "${arn}" ]; then
+    orig_key=${AWS_ACCESS_KEY_ID:-""}
+    orig_secret=${AWS_SECRET_ACCESS_KEY:-""}
+    orig_session=${AWS_SESSION_TOKEN:-""}
+
+    session=$(aws sts assume-role --role-arn "${arn}" --role-session-name "role${n}" | jq '.Credentials')
+    AWS_ACCESS_KEY_ID=$(jq -r '.AccessKeyId' <<< "${session}")
+    AWS_SECRET_ACCESS_KEY=$(jq -r '.SecretAccessKey' <<< "${session}")
+    AWS_SESSION_TOKEN=$(jq -r '.SessionToken' <<< "${session}")
+
+    export AWS_ACCESS_KEY_ID
+    export AWS_SECRET_ACCESS_KEY
+    export AWS_SESSION_TOKEN
+  fi
+
+  account=$(aws sts get-caller-identity | jq -r '.Account') || logErr "could not get aws account id"
+  acc_alias=$(aws iam list-account-aliases | jq -r '.AccountAliases[]') || logErr "could not list account aliases"
+}
+
+reset_account() {
+  export AWS_ACCESS_KEY_ID=${orig_key:-""}
+  export AWS_SECRET_ACCESS_KEY=${orig_secret:-""}
+  export AWS_SESSION_TOKEN=${orig_session:-""}
+}

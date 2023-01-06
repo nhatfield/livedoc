@@ -1,0 +1,32 @@
+docit() {
+  render_urls
+  echo "**Name:** $(echo ${name} | tr 'a-z' 'A-Z')
+
+<br>
+<br>
+${attributes}
+
+<br>
+<br>
+${monitoring}
+
+<br>
+<br>
+**References**
+
+* **Documentation:** [wiki](${wiki_full_url}/${name})
+* **Source Code:** 
+  * [Infra](${source_control_infra_url})
+  * [OS and Application](${source_control_os_url})
+* **Change Control:**
+  * [Tickets](${change_control_full_url})
+  * Last Infra Deploy: \`${infra_timestamp:-NULL}\`
+  * Last OS and Application Deploy: \`${os_timestamp:-NULL}\`
+" > "${docFile}"
+
+  if [ -f "${docFile}" ]; then
+    logInfo "created ${docFile}"
+  else
+    logErr "could not create ${docFile}. Something went wrong"
+  fi
+}

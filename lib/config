@@ -1,0 +1,88 @@
+get_config() {
+  for c in ${homeDir}/conf/*.conf; do
+    # shellcheck source=src/util.sh
+    . "${c}"
+  done
+
+  if [ "${aws_regions}" ]; then
+    if [[ ! "${aws_regions}" = *"${providerDefaultRegion}"* ]]; then
+      aws_regions="${aws_regions} ${providerDefaultRegion}"
+    fi
+  fi
+
+  domain_services="Route53"
+  compute_services="EC2 RDS"
+  network_services="VPC"
+}
+
+set_docDir() {
+  docRegionDir="${homeDir}/docs/${provider}/${acc_alias}/${acc_region}"
+  docDir="${docRegionDir}/${dirAlias}"
+  [ -d "${docDir}" ] || mkdir -p "${docDir}"
+}
+
+render_urls() {
+  change_control_full_url=
+  monitored_ops_url=
+  monitored_host_url=
+  monitored_alert_url=
+  source_control_infra_url=
+  source_control_os_url=
+  wiki_full_url=
+
+
+  if [[ "${monitor_url}" = *"datadog"* ]]; then
+    monitored_host_url="${monitor_url}/infrastructure?app=aws&host=${name}&tags=host%3A${name}"
+    monitored_ops_url="${monitor_url}/dashboard/wqj-gj3-d35/ops-overview"
+    monitored_alert_url="${monitor_url}/monitors/manage?q=${name}"
+  fi
+
+  if [[ "${wiki_url}" = *"atlassian"* ]]; then
+    wiki_full_url="${wiki_url}/wiki/label"
+  fi
+
+  if [[ "${change_control_url}" = *"atlassian"* ]]; then
+    change_control_full_url="${change_control_url}/issues/?jql=labels%20%3D%20${name}"
+  fi
+
+  if [[ "${source_control_url}" = *"bitbucket"* ]]; then
+    sourceId=src
+  elif [[ "${source_control_url}" = *"git"* ]]; then
+    sourceId=tree
+  else
+    sourceId=null
+  fi
+
+  if [ "${sourceInfraPath}" ]; then
+    sourceInfraBasePath=$(awk -F '/' '{print $1}' <<< "${sourceInfraPath}")
+    sourceInfraSuffixPath=$(sed "s%.*${sourceInfraBasePath}/%%" <<< "${sourceInfraPath}")
+    sourceInfraFullPath="${sourceInfraBasePath}/${sourceId}/${source_control_default_branch}/${sourceInfraSuffixPath}"
+
+    source_control_infra_url="${source_control_url}/${sourceInfraFullPath}"
+  fi
+
+  if [ "${sourceOsPath}" ]; then
+    sourceOsBasePath=$(awk -F '/' '{print $1}' <<< "${sourceOsPath}")
+    sourceOsSuffixPath=$(sed "s%.*${sourceOsBasePath}/%%" <<< "${sourceOsPath}")
+    sourceOsFullPath="${sourceOsBasePath}/${sourceId}/${source_control_default_branch}/${sourceOsSuffixPath}"
+
+    source_control_os_url="${source_control_url}/${sourceFullPath}"
+  fi
+}
+
+create_monitor_attributes() {
+  resp=${1:-""}
+  
+  if [ "${resp}" = "true" ]; then
+    render_urls
+    monitoring=$(echo "**Monitoring**
+
+* **Ops Dashboard:** [ops](${monitored_ops_url})
+* **Host Dashboard:** [host](${monitored_host_url})
+* **Alerts:** [alerts](${monitored_alert_url})")
+  else
+    monitoring=$(echo "**Monitoring**
+
+**N/A**")
+  fi
+}
