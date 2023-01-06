@@ -1,0 +1,8 @@
+repos:
+-   repo: local
+    hooks:
+      - id: shell-lint
+        name: shell-linting
+        entry: bash -c 'shellcheck bin/* lib/* entrypoint --severity=warning --exclude=SC2154,SC2148,SC2034,SC2207,SC2164,SC2010'
+        language: system
+        types: [shell]
